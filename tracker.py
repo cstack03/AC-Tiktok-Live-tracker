@@ -17,6 +17,9 @@ Config via environment variables (or edit the constants below):
     POWERUP_TTL_DAYS  - expiry window for a powerup (default 5)
 """
 
+import eventlet
+eventlet.monkey_patch()
+
 import os
 import sqlite3
 import asyncio
@@ -59,7 +62,7 @@ log = logging.getLogger("tracker")
 # Flask + Socket.IO setup
 # ---------------------------------------------------------------------------
 app = Flask(__name__, static_folder="templates", template_folder="templates")
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet")
 
 # ---------------------------------------------------------------------------
 # Database
@@ -350,4 +353,4 @@ if __name__ == "__main__":
     threading.Thread(target=expiry_sweeper, daemon=True).start()
 
     log.info("Starting web server on http://%s:%s", HOST, PORT)
-    socketio.run(app, host=HOST, port=PORT)
+    socketio.run(app, host=HOST, port=PORT, allow_unsafe_werkzeug=True)
