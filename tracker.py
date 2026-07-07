@@ -298,11 +298,6 @@ async def run_live_session(client: TikTokLiveClient):
 
 
 def polling_loop():
-    """
-    Background thread: every POLL_INTERVAL_SEC, check if the user is live.
-    If live, run the full event-driven session (blocks until stream ends).
-    If not live, sleep and check again.
-    """
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
@@ -317,7 +312,7 @@ def polling_loop():
                 log.info("Stream ended. Resuming polling.")
             else:
                 log.info("@%s is not live. Checking again in %ss.", USERNAME, POLL_INTERVAL_SEC)
-       except Exception as e:
+        except Exception as e:
             log.error("Polling loop error: %s", e)
             log.error(traceback.format_exc())
 
