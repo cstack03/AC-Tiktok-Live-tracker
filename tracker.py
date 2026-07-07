@@ -4,19 +4,11 @@ TikTok Live Gift/Powerup Tracker
 Polls a TikTok username every 60s. When live, connects to the stream and
 logs every gift/powerup event to SQLite. Broadcasts events + expiry info
 to the browser over WebSockets (Flask-SocketIO). Serves index.html.
-
-Install:
-    pip install TikTokLive flask flask-socketio eventlet
-
-Run:
-    python tracker.py
-
-Config via environment variables (or edit the constants below):
-    TIKTOK_USERNAME   - your TikTok @username (no @)
-    POLL_INTERVAL_SEC - seconds between liveness checks (default 60)
-    POWERUP_TTL_DAYS  - expiry window for a powerup (default 5)
 """
 
+# eventlet.monkey_patch() MUST run before anything else imports socket/ssl/threading
+# (including psycopg2, asyncio internals pulled in by TikTokLive, etc.) or you get
+# "RLock(s) were not greened" errors and unreliable async behavior.
 import eventlet
 eventlet.monkey_patch()
 
@@ -26,14 +18,11 @@ import asyncio
 import threading
 import time
 import logging
+import traceback
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlparse
 
-from flask import Flask, jsonify, send_from_directory
-from flask_socketio import SocketIO
-
-from TikTokLive import TikTokLiveClient
-from TikTokLive.events import ConnectEvent, DisconnectEvent, GiftEvent
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+log = logging.getLogger("tracker")
 
 # ---------------------------------------------------------------------------
 # Config
@@ -45,18 +34,19 @@ DB_PATH = os.environ.get("DB_PATH", "powerups.db")
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "5000"))
 
-# If DATABASE_URL is set (e.g. by Render's free Postgres add-on), use Postgres
-# for persistence. Otherwise fall back to local SQLite (fine for local testing,
-# but NOT persistent on most free hosting free tiers with ephemeral disks).
 DATABASE_URL = os.environ.get("DATABASE_URL")
 USE_POSTGRES = bool(DATABASE_URL)
+
+# Import everything else AFTER monkey_patch() has run
+from flask import Flask, jsonify, send_from_directory
+from flask_socketio import SocketIO
+
+from TikTokLive import TikTokLiveClient
+from TikTokLive.events import ConnectEvent, DisconnectEvent, GiftEvent
 
 if USE_POSTGRES:
     import psycopg2
     import psycopg2.extras
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-log = logging.getLogger("tracker")
 
 # ---------------------------------------------------------------------------
 # Flask + Socket.IO setup
@@ -327,8 +317,9 @@ def polling_loop():
                 log.info("Stream ended. Resuming polling.")
             else:
                 log.info("@%s is not live. Checking again in %ss.", USERNAME, POLL_INTERVAL_SEC)
-        except Exception as e:
+       except Exception as e:
             log.error("Polling loop error: %s", e)
+            log.error(traceback.format_exc())
 
         time.sleep(POLL_INTERVAL_SEC)
 
