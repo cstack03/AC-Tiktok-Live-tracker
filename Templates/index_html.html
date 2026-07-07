@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>TikTok Live Powerup Tracker</title>
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1117;
+    --panel: #1a1d29;
+    --border: #2a2e3f;
+    --text: #e6e8f0;
+    --muted: #8b8fa3;
+    --accent: #ff2d78;
+    --accent2: #00e5ff;
+    --good: #35d07f;
+    --warn: #ffb020;
+    --danger: #ff4d5e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 24px;
+  }
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  h1 {
+    font-size: 22px;
+    margin: 0;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 14px;
+    border-radius: 999px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    font-size: 14px;
+  }
+  .dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--muted);
+  }
+  .dot.live {
+    background: var(--good);
+    box-shadow: 0 0 8px var(--good);
+    animation: pulse 1.4s infinite;
+  }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(53,208,127,0.5); }
+    70% { box-shadow: 0 0 0 8px rgba(53,208,127,0); }
+    100% { box-shadow: 0 0 0 0 rgba(53,208,127,0); }
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 20px;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+  }
+  th, td {
+    text-align: left;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  th {
+    color: var(--muted);
+    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0.05em;
+  }
+  tr.expiring-soon td { color: var(--warn); }
+  tr.expired td { color: var(--danger); opacity: 0.6; }
+  .badge {
+    display: inline-block;
+    padding: 3px 8px;
+    border-radius: 6px;
+    background: rgba(0,229,255,0.12);
+    color: var(--accent2);
+    font-size: 12px;
+  }
+  .empty-row td {
+    text-align: center;
+    color: var(--muted);
+    padding: 24px;
+  }
+  #toast-container {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    z-index: 999;
+  }
+  .toast {
+    background: linear-gradient(135deg, var(--accent), #c2185b);
+    color: white;
+    padding: 14px 18px;
+    border-radius: 10px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    min-width: 240px;
+    animation: slideIn 0.3s ease-out;
+  }
+  .toast strong { display: block; font-size: 15px; margin-bottom: 2px; }
+  .toast span { font-size: 12px; opacity: 0.9; }
+  @keyframes slideIn {
+    from { transform: translateX(100%); opacity: 0; }
+    to { transform: translateX(0); opacity: 1; }
+  }
+  @keyframes fadeOut {
+    to { opacity: 0; transform: translateX(20px); }
+  }
+  .fade-out { animation: fadeOut 0.4s forwards; }
+  .meta {
+    color: var(--muted);
+    font-size: 13px;
+    margin-top: -8px;
+    margin-bottom: 16px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>⚡ Live Powerup Tracker</h1>
+  <div class="status">
+    <div id="live-dot" class="dot"></div>
+    <span id="live-text">Checking status…</span>
+  </div>
+</header>
+
+<div class="panel">
+  <p class="meta">Powerups expire 5 days after being received. Table updates live.</p>
+  <table id="powerup-table">
+    <thead>
+      <tr>
+        <th>User</th>
+        <th>Power-up</th>
+        <th>Qty</th>
+        <th>Received</th>
+        <th>Expires</th>
+        <th>Status</th>
+      </tr>
+    </thead>
+    <tbody id="powerup-body">
+      <tr class="empty-row"><td colspan="6">Loading history…</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div id="toast-container"></div>
+
+<script>
+const TTL_DAYS = 5;
+const socket = io();
+
+const powerupBody = document.getElementById("powerup-body");
+const liveDot = document.getElementById("live-dot");
+const liveText = document.getElementById("live-text");
+const toastContainer = document.getElementById("toast-container");
+
+// In-memory store of active rows, keyed by DB row id
+let rows = new Map();
+
+function fmtDate(iso) {
+  const d = new Date(iso);
+  return d.toLocaleString(undefined, {
+    month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"
+  });
+}
+
+function statusFor(expiresAtIso) {
+  const now = Date.now();
+  const expires = new Date(expiresAtIso).getTime();
+  const msLeft = expires - now;
+  if (msLeft <= 0) return { label: "Expired", cls: "expired" };
+  const hoursLeft = msLeft / 36e5;
+  if (hoursLeft <= 24) return { label: `Expires in ${Math.max(1, Math.round(hoursLeft))}h`, cls: "expiring-soon" };
+  const daysLeft = Math.ceil(hoursLeft / 24);
+  return { label: `${daysLeft}d left`, cls: "" };
+}
+
+function renderTable() {
+  const sorted = [...rows.values()].sort((a, b) => new Date(b.received_at) - new Date(a.received_at));
+
+  if (sorted.length === 0) {
+    powerupBody.innerHTML = `<tr class="empty-row"><td colspan="6">No active power-ups right now.</td></tr>`;
+    return;
+  }
+
+  powerupBody.innerHTML = sorted.map(row => {
+    const st = statusFor(row.expires_at);
+    return `
+      <tr class="${st.cls}" data-id="${row.id}">
+        <td>${escapeHtml(row.nickname || row.username)}</td>
+        <td><span class="badge">${escapeHtml(row.powerup_type)}</span></td>
+        <td>${row.gift_count}</td>
+        <td>${fmtDate(row.received_at)}</td>
+        <td>${fmtDate(row.expires_at)}</td>
+        <td>${st.label}</td>
+      </tr>
+    `;
+  }).join("");
+}
+
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+function showToast(row) {
+  const el = document.createElement("div");
+  el.className = "toast";
+  el.innerHTML = `<strong>🎁 ${escapeHtml(row.powerup_type)} x${row.gift_count}</strong><span>from ${escapeHtml(row.nickname || row.username)}</span>`;
+  toastContainer.appendChild(el);
+  setTimeout(() => {
+    el.classList.add("fade-out");
+    setTimeout(() => el.remove(), 400);
+  }, 5000);
+}
+
+function setLiveStatus(isLive) {
+  liveDot.classList.toggle("live", isLive);
+  liveText.textContent = isLive ? "LIVE now" : "Offline (polling…)";
+}
+
+// --- Initial load: pull active powerups from DB via REST ---
+async function loadInitial() {
+  try {
+    const [activeRes, statusRes] = await Promise.all([
+      fetch("/api/active"),
+      fetch("/api/status"),
+    ]);
+    const active = await activeRes.json();
+    const status = await statusRes.json();
+
+    active.forEach(r => rows.set(r.id, r));
+    renderTable();
+    setLiveStatus(status.live);
+  } catch (e) {
+    console.error("Failed to load initial data", e);
+    powerupBody.innerHTML = `<tr class="empty-row"><td colspan="6">Could not load history.</td></tr>`;
+  }
+}
+
+// --- WebSocket events ---
+socket.on("connect", () => {
+  console.log("Connected to tracker server");
+});
+
+socket.on("stream_status", (data) => {
+  setLiveStatus(data.live);
+});
+
+socket.on("new_powerup", (row) => {
+  rows.set(row.id, row);
+  renderTable();
+  showToast(row);
+});
+
+socket.on("heartbeat", () => {
+  // Re-render periodically so "expires in Xh" countdowns and expired rows stay fresh
+  renderTable();
+});
+
+// Prune expired rows out of memory every minute (they'll just show as expired until then)
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, row] of rows) {
+    if (new Date(row.expires_at).getTime() < now - 24 * 3600 * 1000) {
+      // keep expired rows visible for a day, then drop from view
+      rows.delete(id);
+    }
+  }
+  renderTable();
+}, 60000);
+
+loadInitial();
+</script>
+
+</body>
+</html>
